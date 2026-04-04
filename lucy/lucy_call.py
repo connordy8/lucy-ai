@@ -295,7 +295,7 @@ def update_assistant_prompt(evening=False):
                 },
             },
             "server": {
-                "url": "https://tice-creek-calendar.vercel.app/api/vapi_tools"
+                "url": "https://lucy-ai-eight.vercel.app/api/vapi_tools"
             },
         },
         {
@@ -321,7 +321,7 @@ def update_assistant_prompt(evening=False):
                 },
             },
             "server": {
-                "url": "https://tice-creek-calendar.vercel.app/api/vapi_tools"
+                "url": "https://lucy-ai-eight.vercel.app/api/vapi_tools"
             },
         },
     ]
