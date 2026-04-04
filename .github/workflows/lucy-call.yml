@@ -1,11 +1,8 @@
 name: Lucy — Call Beth
 
 on:
-  # Morning check-in: 10 AM PT = 5 PM UTC (6 PM UTC during standard time)
-  # Evening wind-down: 11:30 PM PT = 6:30 AM+1 UTC (7:30 AM+1 during standard time)
-  schedule:
-    - cron: "0 17 * * *"    # 10 AM PT (PDT)
-    - cron: "30 6 * * *"    # 11:30 PM PT (PDT) — runs next day UTC
+  # Evening call only — triggered by Vercel Cron at exactly 11:30 PM PT
+  # No schedule here; Vercel cron hits /api/cron_trigger which dispatches this workflow
 
   # Allow manual trigger with call type selection
   workflow_dispatch:

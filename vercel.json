@@ -9,10 +9,6 @@
   ],
   "crons": [
     {
-      "path": "/api/cron_trigger?command=call",
-      "schedule": "0 17 * * *"
-    },
-    {
       "path": "/api/cron_trigger?command=call-evening",
       "schedule": "30 6 * * *"
     }
