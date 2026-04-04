@@ -22,6 +22,9 @@ on:
           - post-process
           - update
 
+permissions:
+  contents: write
+
 jobs:
   lucy:
     runs-on: ubuntu-latest
