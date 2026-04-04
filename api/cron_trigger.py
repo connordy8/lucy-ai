@@ -17,7 +17,7 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(b"Unauthorized")
             return
 
-        gh_token = os.environ.get("GITHUB_TOKEN")
+        gh_token = os.environ.get("GITHUB_TOKEN", "").strip()
         if not gh_token:
             self.send_response(500)
             self.end_headers()
