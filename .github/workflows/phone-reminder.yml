@@ -1,0 +1,34 @@
+name: Lucy — Class Reminders
+
+on:
+  schedule:
+    # Every 5 minutes — checks if Zumba or Aquacise starts in ~45 min
+    - cron: "*/5 * * * *"
+
+  workflow_dispatch:
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests google-auth google-api-python-client
+
+      - name: Check for upcoming classes
+        env:
+          VAPI_API_KEY: ${{ secrets.VAPI_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+          GOOGLE_CALENDAR_ID: ${{ secrets.GOOGLE_CALENDAR_ID }}
+          BETH_PHONE_NUMBER: ${{ secrets.BETH_PHONE_NUMBER }}
+          BETH_CELL_NUMBER: ${{ secrets.BETH_CELL_NUMBER }}
+        run: python phone_reminder.py
