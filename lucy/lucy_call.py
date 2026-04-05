@@ -329,8 +329,8 @@ def update_assistant_prompt(evening=False):
     if evening:
         voicemail_msg = (
             "Hi Beth, it's your assistant Lucy. "
-            "Just a reminder to use your CPAP tonight. "
-            "Sleep well and have a good night!"
+            "Just a reminder to head to bed and use your CPAP tonight. "
+            "Goodnight!"
         )
     else:
         voicemail_msg = (
