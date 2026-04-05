@@ -135,7 +135,7 @@ def extract_class_info(event):
     except (ValueError, AttributeError):
         time_str = "soon"
 
-    return {"name": clean_name, "time": time_str}
+    return {"name": clean_name, "time": time_str, "start_dt": start_dt}
 
 
 def _place_call(number):
@@ -195,16 +195,30 @@ def make_reminder_call(event_info):
     name = event_info["name"]
     time_str = event_info["time"]
 
-    # Update Lucy's first message for the reminder
+    # Calculate minutes until class
+    now = datetime.now(timezone.utc)
+    start_dt = event_info.get("start_dt")
+    if start_dt:
+        mins = int((start_dt - now).total_seconds() / 60)
+    else:
+        mins = 45
+
+    # Update Lucy's first message and voicemail message
     first_msg = (
         "Hi Beth! It's Lucy. Just a quick reminder — you've got "
         "{} coming up at {}. You'll want to start getting ready soon!"
     ).format(name, time_str)
 
+    voicemail_msg = (
+        "Hi Beth, it's your assistant Lucy. "
+        "This is a reminder that you have {} in {} minutes. "
+        "Have a good day!"
+    ).format(name, mins)
+
     requests.patch(
         "{}/assistant/{}".format(VAPI_API, ASSISTANT_ID),
         headers=vapi_headers(),
-        json={"firstMessage": first_msg},
+        json={"firstMessage": first_msg, "voicemailMessage": voicemail_msg},
     )
 
     # Try home -> cell -> home -> cell

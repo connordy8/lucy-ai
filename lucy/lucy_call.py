@@ -326,6 +326,18 @@ def update_assistant_prompt(evening=False):
         },
     ]
 
+    if evening:
+        voicemail_msg = (
+            "Hi Beth, it's your assistant Lucy. "
+            "Just a reminder to use your CPAP tonight. "
+            "Sleep well and have a good night!"
+        )
+    else:
+        voicemail_msg = (
+            "Hi Beth, it's your assistant Lucy. "
+            "Just checking in. Have a good day!"
+        )
+
     resp = requests.patch(
         "{}/assistant/{}".format(VAPI_API, ASSISTANT_ID),
         headers=vapi_headers(),
@@ -337,6 +349,7 @@ def update_assistant_prompt(evening=False):
                 "tools": tools,
             },
             "firstMessage": first_message,
+            "voicemailMessage": voicemail_msg,
         },
     )
 
