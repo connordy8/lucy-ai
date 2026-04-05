@@ -398,7 +398,8 @@ def call_was_answered(call_data):
         return False
     reason = call_data.get("endedReason", "")
     # These reasons mean nobody picked up
-    no_answer = ("no-answer", "busy", "failed", "machine-detected")
+    no_answer = ("no-answer", "busy", "failed", "machine-detected",
+                 "voicemail", "silence-timed-out")
     if reason in no_answer:
         return False
     # If the call lasted less than 10 seconds, likely not answered
@@ -416,26 +417,36 @@ def call_was_answered(call_data):
 
 
 def make_call_with_fallback(home_phone, cell_phone):
-    """Try home phone first, fall back to cell if no answer."""
-    log.info("Trying home phone first: {}".format(home_phone))
-    call_data = make_call(home_phone)
+    """Try home -> cell -> home -> cell, stop when Beth answers."""
+    numbers = [
+        ("home", home_phone),
+        ("cell", cell_phone),
+        ("home", home_phone),
+        ("cell", cell_phone),
+    ]
 
-    if not call_data:
-        log.info("Home call failed to initiate, trying cell...")
-        return make_call(cell_phone)
+    for label, number in numbers:
+        log.info("Attempt: calling {} ({})".format(label, number))
+        call_data = make_call(number)
 
-    call_id = call_data.get("id", "")
-    log.info("Waiting for home call to complete...")
-    result = wait_for_call_end(call_id)
+        if not call_data:
+            log.info("{} call failed to initiate, trying next...".format(label))
+            continue
 
-    if call_was_answered(result):
-        log.info("Home phone answered! Call complete.")
-        return result
+        call_id = call_data.get("id", "")
+        log.info("Waiting for {} call to complete...".format(label))
+        result = wait_for_call_end(call_id)
 
-    log.info("Home phone not answered (reason: {}). Trying cell: {}".format(
-        result.get("endedReason", "unknown") if result else "timeout",
-        cell_phone))
-    return make_call(cell_phone)
+        if call_was_answered(result):
+            log.info("Beth answered on {}!".format(label))
+            return result
+
+        log.info("No answer on {} (reason: {}). Trying next...".format(
+            label,
+            result.get("endedReason", "unknown") if result else "timeout"))
+
+    log.warning("All 4 call attempts failed — Beth did not answer")
+    return None
 
 
 def get_recent_calls(limit=5):

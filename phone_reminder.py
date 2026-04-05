@@ -138,59 +138,97 @@ def extract_class_info(event):
     return {"name": clean_name, "time": time_str}
 
 
-def make_reminder_call(event_info):
-    """Use Lucy via Vapi to call Beth with a class reminder."""
-    beth_home = os.environ.get("BETH_PHONE_NUMBER", "+19252781199")
-    beth_cell = os.environ.get("BETH_CELL_NUMBER", "+14403211704")
-
-    name = event_info["name"]
-    time_str = event_info["time"]
-
-    # Temporarily update Lucy's first message for the reminder
-    first_msg = (
-        "Hi Beth! It's Lucy. Just a quick reminder — you've got "
-        "{} coming up at {}. You'll want to start getting ready soon!"
-    ).format(name, time_str)
-
-    # Update assistant first message
-    requests.patch(
-        "{}/assistant/{}".format(VAPI_API, ASSISTANT_ID),
-        headers=vapi_headers(),
-        json={"firstMessage": first_msg},
-    )
-
-    # Try home phone first
-    log.info("Calling home: {}".format(beth_home))
+def _place_call(number):
+    """Place a single call and return the call ID, or None on failure."""
     resp = requests.post(
         "{}/call".format(VAPI_API),
         headers=vapi_headers(),
         json={
             "assistantId": ASSISTANT_ID,
             "phoneNumberId": PHONE_NUMBER_ID,
-            "customer": {"number": beth_home},
+            "customer": {"number": number},
         },
     )
-
     if resp.status_code in (200, 201):
-        log.info("Reminder call placed! ID: {}".format(
-            resp.json().get("id", "")))
-        return True
-    else:
-        log.warning("Home call failed, trying cell...")
-        resp = requests.post(
-            "{}/call".format(VAPI_API),
+        call_id = resp.json().get("id", "")
+        log.info("  Call placed! ID: {}".format(call_id))
+        return call_id
+    log.warning("  Call API failed: {}".format(resp.text[:200]))
+    return None
+
+
+def _wait_and_check(call_id, timeout=120):
+    """Wait for a call to end and return True if Beth answered."""
+    import time
+    for _ in range(timeout // 5):
+        time.sleep(5)
+        resp = requests.get(
+            "{}/call/{}".format(VAPI_API, call_id),
             headers=vapi_headers(),
-            json={
-                "assistantId": ASSISTANT_ID,
-                "phoneNumberId": PHONE_NUMBER_ID,
-                "customer": {"number": beth_cell},
-            },
         )
-        if resp.status_code in (200, 201):
-            log.info("Cell reminder call placed!")
+        if resp.status_code != 200:
+            continue
+        data = resp.json()
+        status = data.get("status", "")
+        if status == "ended":
+            reason = data.get("endedReason", "")
+            log.info("  Call ended. Reason: {}".format(reason))
+            # These reasons mean Beth did NOT answer
+            if reason in ("no-answer", "busy", "failed",
+                          "machine-detected", "voicemail",
+                          "silence-timed-out"):
+                return False
             return True
-        log.error("Both calls failed: {}".format(resp.text[:200]))
-        return False
+    log.warning("  Call timed out waiting for result")
+    return False
+
+
+def make_reminder_call(event_info):
+    """Use Lucy via Vapi to call Beth with a class reminder.
+
+    Tries home phone then cell phone, repeating twice:
+    home -> cell -> home -> cell, stopping as soon as Beth answers.
+    """
+    beth_home = os.environ.get("BETH_PHONE_NUMBER", "+19252781199")
+    beth_cell = os.environ.get("BETH_CELL_NUMBER", "+14403211704")
+
+    name = event_info["name"]
+    time_str = event_info["time"]
+
+    # Update Lucy's first message for the reminder
+    first_msg = (
+        "Hi Beth! It's Lucy. Just a quick reminder — you've got "
+        "{} coming up at {}. You'll want to start getting ready soon!"
+    ).format(name, time_str)
+
+    requests.patch(
+        "{}/assistant/{}".format(VAPI_API, ASSISTANT_ID),
+        headers=vapi_headers(),
+        json={"firstMessage": first_msg},
+    )
+
+    # Try home -> cell -> home -> cell
+    numbers = [
+        ("home", beth_home),
+        ("cell", beth_cell),
+        ("home", beth_home),
+        ("cell", beth_cell),
+    ]
+
+    for label, number in numbers:
+        log.info("Attempt: calling {} ({})".format(label, number))
+        call_id = _place_call(number)
+        if not call_id:
+            continue
+
+        if _wait_and_check(call_id):
+            log.info("Beth answered on {}!".format(label))
+            return True
+
+        log.info("No answer on {}, trying next...".format(label))
+
+    log.warning("All 4 call attempts failed — Beth did not answer")
+    return False
 
 
 def mark_as_reminded(service, calendar_id, event_id):

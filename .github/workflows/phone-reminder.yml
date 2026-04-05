@@ -10,7 +10,7 @@ on:
 jobs:
   remind:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
