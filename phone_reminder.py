@@ -106,6 +106,15 @@ def should_call(event):
     if "dateTime" not in start:
         return False
 
+    # Only call for classes at 10:30 AM or later
+    from zoneinfo import ZoneInfo
+    start_dt = datetime.fromisoformat(start["dateTime"]).astimezone(
+        ZoneInfo("America/Los_Angeles"))
+    if start_dt.hour < 10 or (start_dt.hour == 10 and start_dt.minute < 30):
+        log.info("  Skipping (before 10:30 AM PT): {}".format(
+            event.get("summary", "")))
+        return False
+
     return True
 
 
