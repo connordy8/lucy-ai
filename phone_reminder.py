@@ -157,8 +157,43 @@ def _place_call(number):
     return None
 
 
-def _wait_and_check(call_id, timeout=120):
-    """Wait for a call to end and return True if Beth answered."""
+# Phrases that strongly indicate voicemail/answering machine
+VOICEMAIL_PHRASES = [
+    "leave a message",
+    "at the tone",
+    "press 1",
+    "not available",
+    "after the beep",
+    "record your message",
+    "voice mail",
+    "voicemail",
+    "is unavailable",
+    "please record",
+    "if you are satisfied with your message",
+    "please try again later",
+]
+
+
+def _looks_like_voicemail(call_data):
+    """Heuristic check: did this call hit a voicemail?"""
+    msgs = call_data.get("artifact", {}).get("messages", [])
+    user_text = " ".join(
+        m.get("message", m.get("content", "")).lower()
+        for m in msgs
+        if m.get("role") == "user"
+    )
+    for phrase in VOICEMAIL_PHRASES:
+        if phrase in user_text:
+            return True
+    return False
+
+
+def _wait_and_check(call_id, timeout=180):
+    """Wait for a call to end and return True if Beth (a human) answered.
+
+    Aggressive detection: checks endedReason, call duration, AND
+    looks for voicemail phrases in the transcript.
+    """
     import time
     for _ in range(timeout // 5):
         time.sleep(5)
@@ -169,16 +204,38 @@ def _wait_and_check(call_id, timeout=120):
         if resp.status_code != 200:
             continue
         data = resp.json()
-        status = data.get("status", "")
-        if status == "ended":
-            reason = data.get("endedReason", "")
-            log.info("  Call ended. Reason: {}".format(reason))
-            # These reasons mean Beth did NOT answer
-            if reason in ("no-answer", "busy", "failed",
-                          "machine-detected", "voicemail",
-                          "silence-timed-out"):
-                return False
-            return True
+        if data.get("status", "") != "ended":
+            continue
+
+        reason = data.get("endedReason", "")
+        log.info("  Call ended. Reason: {}".format(reason))
+
+        # Hard no-answer reasons
+        if reason in ("no-answer", "busy", "failed",
+                      "machine-detected", "voicemail",
+                      "silence-timed-out", "twilio-failed-to-connect-call"):
+            return False
+
+        # Transcript heuristic — catches voicemails Twilio missed
+        if _looks_like_voicemail(data):
+            log.info("  Transcript looks like voicemail — treating as no answer")
+            return False
+
+        # Duration check — if call was very short, likely not answered
+        started = data.get("startedAt", "")
+        ended = data.get("endedAt", "")
+        if started and ended:
+            try:
+                s = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                e = datetime.fromisoformat(ended.replace("Z", "+00:00"))
+                duration = (e - s).total_seconds()
+                if duration < 15:
+                    log.info("  Call too short ({}s) — treating as no answer".format(int(duration)))
+                    return False
+            except (ValueError, TypeError):
+                pass
+
+        return True
     log.warning("  Call timed out waiting for result")
     return False
 

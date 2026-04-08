@@ -405,24 +405,63 @@ def wait_for_call_end(call_id, timeout=300, poll_interval=10):
     return None
 
 
+# Phrases that strongly indicate voicemail/answering machine
+VOICEMAIL_PHRASES = [
+    "leave a message",
+    "at the tone",
+    "press 1",
+    "not available",
+    "after the beep",
+    "record your message",
+    "voice mail",
+    "voicemail",
+    "is unavailable",
+    "please record",
+    "if you are satisfied with your message",
+    "please try again later",
+]
+
+
+def _looks_like_voicemail(call_data):
+    """Heuristic check: did this call hit a voicemail?"""
+    msgs = call_data.get("artifact", {}).get("messages", [])
+    user_text = " ".join(
+        m.get("message", m.get("content", "")).lower()
+        for m in msgs
+        if m.get("role") == "user"
+    )
+    for phrase in VOICEMAIL_PHRASES:
+        if phrase in user_text:
+            return True
+    return False
+
+
 def call_was_answered(call_data):
-    """Check if a completed call was actually answered by a human."""
+    """Check if a completed call was actually answered by a human.
+
+    Aggressive detection: endedReason + duration + transcript heuristic.
+    """
     if not call_data:
         return False
     reason = call_data.get("endedReason", "")
     # These reasons mean nobody picked up
     no_answer = ("no-answer", "busy", "failed", "machine-detected",
-                 "voicemail", "silence-timed-out")
+                 "voicemail", "silence-timed-out",
+                 "twilio-failed-to-connect-call")
     if reason in no_answer:
         return False
-    # If the call lasted less than 10 seconds, likely not answered
+    # Transcript heuristic — catches voicemails Twilio missed
+    if _looks_like_voicemail(call_data):
+        log.info("Transcript looks like voicemail — treating as no answer")
+        return False
+    # If the call lasted less than 15 seconds, likely not answered
     started = call_data.get("startedAt", "")
     ended = call_data.get("endedAt", "")
     if started and ended:
         try:
             s = datetime.fromisoformat(started.replace("Z", "+00:00"))
             e = datetime.fromisoformat(ended.replace("Z", "+00:00"))
-            if (e - s).total_seconds() < 10:
+            if (e - s).total_seconds() < 15:
                 return False
         except (ValueError, TypeError):
             pass
