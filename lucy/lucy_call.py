@@ -547,6 +547,34 @@ def process_recent_calls():
 
         call_detail = resp.json()
 
+        # Skip no-answer / voicemail / very short calls — otherwise the
+        # summarizer hallucinates conversations that never happened.
+        reason = call_detail.get("endedReason", "")
+        if reason in ("no-answer", "busy", "failed",
+                      "machine-detected", "voicemail",
+                      "silence-timed-out", "twilio-failed-to-connect-call"):
+            log.info("  Skipping call {} (no answer: {})".format(
+                call_id[:8], reason))
+            marker.touch()
+            continue
+        if _looks_like_voicemail(call_detail):
+            log.info("  Skipping call {} (transcript looks like voicemail)".format(
+                call_id[:8]))
+            marker.touch()
+            continue
+        started = call_detail.get("startedAt", "")
+        ended_at = call_detail.get("endedAt", "")
+        if started and ended_at:
+            try:
+                s = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                e = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
+                if (e - s).total_seconds() < 15:
+                    log.info("  Skipping call {} (too short)".format(call_id[:8]))
+                    marker.touch()
+                    continue
+            except (ValueError, TypeError):
+                pass
+
         # Build transcript from messages
         messages = call_detail.get("messages", [])
         if not messages:
