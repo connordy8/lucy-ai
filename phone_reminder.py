@@ -240,6 +240,42 @@ def _wait_and_check(call_id, timeout=180):
     return False
 
 
+def _build_class_reminder_prompt(class_name, class_time):
+    """Build a proper system prompt for class reminder calls.
+
+    Loads the full system_prompt.txt template so Lucy has her full
+    personality, then adds class-specific context.
+    """
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+
+    PACIFIC = ZoneInfo("America/Los_Angeles")
+    template_path = Path(__file__).parent / "lucy" / "system_prompt.txt"
+    template = template_path.read_text()
+
+    current_time = datetime.now(PACIFIC).strftime(
+        "%A, %B %-d, %Y at %-I:%M %p PT")
+
+    prompt = template.replace("{current_time}", current_time)
+    prompt = prompt.replace("{calendar_context}",
+                            "Beth has {} at {} today.".format(class_name, class_time))
+    prompt = prompt.replace("{memory_context}", "(class reminder call)")
+
+    # Add explicit class-reminder instructions so Lucy stays on topic
+    prompt += (
+        "\n\n## THIS CALL — CLASS REMINDER\n"
+        "You are calling to remind Beth about {} at {}.\n"
+        "1. Keep it brief — remind her what class is coming up and when.\n"
+        "2. If she acknowledges, say goodbye and end the call.\n"
+        "3. Do NOT ask about bedtime, CPAP, or sleeping. "
+        "This is a daytime class reminder.\n"
+        "4. Do NOT try to extend the conversation. Just deliver the "
+        "reminder warmly and wrap up.\n"
+    ).format(class_name, class_time)
+
+    return prompt
+
+
 def make_reminder_call(event_info):
     """Use Lucy via Vapi to call Beth with a class reminder.
 
@@ -272,10 +308,22 @@ def make_reminder_call(event_info):
         "Have a good day!"
     ).format(name, mins)
 
+    # Build the full system prompt so Lucy knows this is a class
+    # reminder, NOT a bedtime call
+    prompt = _build_class_reminder_prompt(name, time_str)
+
     requests.patch(
         "{}/assistant/{}".format(VAPI_API, ASSISTANT_ID),
         headers=vapi_headers(),
-        json={"firstMessage": first_msg, "voicemailMessage": voicemail_msg},
+        json={
+            "model": {
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "system", "content": prompt}],
+            },
+            "firstMessage": first_msg,
+            "voicemailMessage": voicemail_msg,
+        },
     )
 
     # Try home -> cell -> home -> cell
