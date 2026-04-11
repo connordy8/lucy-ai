@@ -1,7 +1,9 @@
-"""Call Beth 45 minutes before Zumba, Aquacise, and Functional Strength classes.
+"""Call Beth 45 minutes before her fitness classes.
 
 Uses Lucy (via Vapi) to make a friendly conversational reminder
-call. Only triggers for Zumba, Aquacise, and Functional Strength.
+call. Triggers for all of Beth's tracked classes (Zumba, Aquacise,
+Functional Strength, UJAM, Posture Balance, Mat Yoga, ForeverFit,
+Pickleball, Let's Stretch, Tai Chi).
 
 Runs every 5 minutes via GitHub Actions. Uses Google Calendar
 extended properties to track which events already got a call,
@@ -24,7 +26,11 @@ REMINDER_WINDOW_MAX = 50  # Don't call if more than 50 min away
 # (targets ~45 min before class, with 5-min cron tolerance)
 
 # Only remind for these classes (case-insensitive partial match)
-REMINDER_CLASSES = ["zumba", "aquacise", "functional strength"]
+REMINDER_CLASSES = [
+    "zumba", "aquacise", "functional strength", "ujam",
+    "posture", "mat yoga", "foreverfit", "forever fit",
+    "pickleball", "let's stretch", "lets stretch", "tai chi",
+]
 
 # Extended property key used to mark events we've already called about
 REMINDED_KEY = "bethReminded"
@@ -384,7 +390,7 @@ def run():
 
     service = get_calendar_service()
 
-    log.info("Checking for Zumba/Aquacise/Functional Strength starting in {}-{} minutes...".format(
+    log.info("Checking for fitness classes starting in {}-{} minutes...".format(
         REMINDER_WINDOW_MIN, REMINDER_WINDOW_MAX))
 
     events = get_upcoming_events(service, calendar_id)
