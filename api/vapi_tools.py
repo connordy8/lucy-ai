@@ -14,7 +14,7 @@ def _get_calendar_service():
     from googleapiclient.discovery import build
 
     creds_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_KEY")
-    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID")
+    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "").strip()
     if not creds_json or not calendar_id:
         return None, None
 

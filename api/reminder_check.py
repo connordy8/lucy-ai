@@ -32,7 +32,7 @@ def _get_calendar_service():
         scopes=["https://www.googleapis.com/auth/calendar"],
     )
     service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "")
+    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "").strip()
     return service, calendar_id
 
 
