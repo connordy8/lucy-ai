@@ -1,10 +1,9 @@
 name: Lucy — Class Reminders
 
 on:
-  schedule:
-    # Every 5 minutes — checks if Zumba or Aquacise starts in ~45 min
-    - cron: "*/5 * * * *"
-
+  # No cron schedule — triggered reliably by cron-job.org via
+  # /api/reminder_check (which checks calendar first, only dispatches
+  # this workflow when a class is actually in the reminder window).
   workflow_dispatch:
 
 concurrency:
