@@ -129,6 +129,7 @@ def extract_class_info(event):
     clean_name = clean_name.strip()
 
     start_str = event.get("start", {}).get("dateTime", "")
+    start_dt = None
     try:
         start_dt = datetime.fromisoformat(start_str)
         time_str = start_dt.strftime("%-I:%M %p")
@@ -138,16 +139,24 @@ def extract_class_info(event):
     return {"name": clean_name, "time": time_str, "start_dt": start_dt}
 
 
-def _place_call(number):
-    """Place a single call and return the call ID, or None on failure."""
+def _place_call(number, overrides=None):
+    """Place a single call and return the call ID, or None on failure.
+
+    Uses assistantOverrides to set prompt per-call — never mutates the
+    shared assistant, preventing race conditions with evening calls.
+    """
+    payload = {
+        "assistantId": ASSISTANT_ID,
+        "phoneNumberId": PHONE_NUMBER_ID,
+        "customer": {"number": number},
+    }
+    if overrides:
+        payload["assistantOverrides"] = overrides
+
     resp = requests.post(
         "{}/call".format(VAPI_API),
         headers=vapi_headers(),
-        json={
-            "assistantId": ASSISTANT_ID,
-            "phoneNumberId": PHONE_NUMBER_ID,
-            "customer": {"number": number},
-        },
+        json=payload,
     )
     if resp.status_code in (200, 201):
         call_id = resp.json().get("id", "")
@@ -188,7 +197,7 @@ def _looks_like_voicemail(call_data):
     return False
 
 
-def _wait_and_check(call_id, timeout=180):
+def _wait_and_check(call_id, timeout=300):
     """Wait for a call to end and return True if Beth (a human) answered.
 
     Aggressive detection: checks endedReason, call duration, AND
@@ -282,8 +291,11 @@ def make_reminder_call(event_info):
     Tries home phone then cell phone, repeating twice:
     home -> cell -> home -> cell, stopping as soon as Beth answers.
     """
-    beth_home = os.environ.get("BETH_PHONE_NUMBER", "+19252781199")
-    beth_cell = os.environ.get("BETH_CELL_NUMBER", "+14403211704")
+    beth_home = os.environ.get("BETH_PHONE_NUMBER")
+    beth_cell = os.environ.get("BETH_CELL_NUMBER")
+    if not beth_home or not beth_cell:
+        log.error("BETH_PHONE_NUMBER and BETH_CELL_NUMBER env vars required")
+        return False
 
     name = event_info["name"]
     time_str = event_info["time"]
@@ -308,23 +320,18 @@ def make_reminder_call(event_info):
         "Have a good day!"
     ).format(name, mins)
 
-    # Build the full system prompt so Lucy knows this is a class
-    # reminder, NOT a bedtime call
+    # Build per-call overrides so we never mutate the shared assistant
     prompt = _build_class_reminder_prompt(name, time_str)
 
-    requests.patch(
-        "{}/assistant/{}".format(VAPI_API, ASSISTANT_ID),
-        headers=vapi_headers(),
-        json={
-            "model": {
-                "provider": "openai",
-                "model": "gpt-4o-mini",
-                "messages": [{"role": "system", "content": prompt}],
-            },
-            "firstMessage": first_msg,
-            "voicemailMessage": voicemail_msg,
+    overrides = {
+        "model": {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "system", "content": prompt}],
         },
-    )
+        "firstMessage": first_msg,
+        "voicemailMessage": voicemail_msg,
+    }
 
     # Try home -> cell -> home -> cell
     numbers = [
@@ -336,7 +343,7 @@ def make_reminder_call(event_info):
 
     for label, number in numbers:
         log.info("Attempt: calling {} ({})".format(label, number))
-        call_id = _place_call(number)
+        call_id = _place_call(number, overrides=overrides)
         if not call_id:
             continue
 

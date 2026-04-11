@@ -230,8 +230,11 @@ def save_memory(call_data):
 
 # ── Call Management ─────────────────────────────────────────────
 
-def update_assistant_prompt(evening=False):
-    """Update Lucy's system prompt with fresh calendar + memory context."""
+def build_call_overrides(evening=False):
+    """Build assistantOverrides for a call — never mutates the shared assistant.
+
+    Returns a dict to pass as assistantOverrides in the /call payload.
+    """
     template = PROMPT_TEMPLATE.read_text()
 
     calendar_ctx = get_todays_calendar()
@@ -247,7 +250,6 @@ def update_assistant_prompt(evening=False):
         first_message = (
             "Hi Beth! It's Lucy. Just calling to say goodnight!"
         )
-        # Add evening-specific instructions to the prompt
         prompt += (
             "\n\n## TONIGHT'S CALL — EVENING WIND-DOWN\n"
             "This is the 11:30 PM bedtime call. Your priorities:\n"
@@ -268,12 +270,14 @@ def update_assistant_prompt(evening=False):
             "Hi Beth! It's Lucy. How are you doing today?"
         )
 
-    log.info("Updating Lucy's prompt ({})...".format(
+    log.info("Building call overrides ({})...".format(
         "evening" if evening else "morning"))
     log.info("  Calendar: {}".format(calendar_ctx[:200]))
     log.info("  Memory: {}".format(memory_ctx[:200]))
 
-    # Build tools list
+    tool_server = os.environ.get(
+        "LUCY_API_BASE", "https://lucy-ai-eight.vercel.app")
+
     tools = [
         {
             "type": "function",
@@ -295,7 +299,7 @@ def update_assistant_prompt(evening=False):
                 },
             },
             "server": {
-                "url": "https://lucy-ai-eight.vercel.app/api/vapi_tools"
+                "url": "{}/api/vapi_tools".format(tool_server)
             },
         },
         {
@@ -321,7 +325,7 @@ def update_assistant_prompt(evening=False):
                 },
             },
             "server": {
-                "url": "https://lucy-ai-eight.vercel.app/api/vapi_tools"
+                "url": "{}/api/vapi_tools".format(tool_server)
             },
         },
     ]
@@ -338,44 +342,40 @@ def update_assistant_prompt(evening=False):
             "Just checking in. Have a good day!"
         )
 
-    resp = requests.patch(
-        "{}/assistant/{}".format(VAPI_API, ASSISTANT_ID),
-        headers=vapi_headers(),
-        json={
-            "model": {
-                "provider": "openai",
-                "model": "gpt-4o-mini",
-                "messages": [{"role": "system", "content": prompt}],
-                "tools": tools,
-            },
-            "firstMessage": first_message,
-            "voicemailMessage": voicemail_msg,
+    return {
+        "model": {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "system", "content": prompt}],
+            "tools": tools,
         },
-    )
-
-    if resp.status_code == 200:
-        log.info("  Prompt updated successfully")
-    else:
-        log.warning("  Failed to update prompt: {}".format(
-            resp.text[:200]))
-
-    return resp.status_code == 200
+        "firstMessage": first_message,
+        "voicemailMessage": voicemail_msg,
+    }
 
 
-def make_call(phone_number):
-    """Place an outbound call to the given number."""
+def make_call(phone_number, overrides=None):
+    """Place an outbound call to the given number.
+
+    Uses assistantOverrides so we never mutate the shared assistant.
+    This prevents race conditions when evening + reminder calls overlap.
+    """
     log.info("Calling {}...".format(phone_number))
+
+    payload = {
+        "assistantId": ASSISTANT_ID,
+        "phoneNumberId": PHONE_NUMBER_ID,
+        "customer": {
+            "number": phone_number,
+        },
+    }
+    if overrides:
+        payload["assistantOverrides"] = overrides
 
     resp = requests.post(
         "{}/call".format(VAPI_API),
         headers=vapi_headers(),
-        json={
-            "assistantId": ASSISTANT_ID,
-            "phoneNumberId": PHONE_NUMBER_ID,
-            "customer": {
-                "number": phone_number,
-            },
-        },
+        json=payload,
     )
 
     if resp.status_code in (200, 201):
@@ -468,7 +468,7 @@ def call_was_answered(call_data):
     return True
 
 
-def make_call_with_fallback(home_phone, cell_phone):
+def make_call_with_fallback(home_phone, cell_phone, overrides=None):
     """Try home -> cell -> home -> cell, stop when Beth answers."""
     numbers = [
         ("home", home_phone),
@@ -479,7 +479,7 @@ def make_call_with_fallback(home_phone, cell_phone):
 
     for label, number in numbers:
         log.info("Attempt: calling {} ({})".format(label, number))
-        call_data = make_call(number)
+        call_data = make_call(number, overrides=overrides)
 
         if not call_data:
             log.info("{} call failed to initiate, trying next...".format(label))
@@ -586,9 +586,19 @@ def process_recent_calls():
         for msg in messages:
             role = msg.get("role", "")
             content = msg.get("content", msg.get("message", ""))
-            if role and content:
-                speaker = "Lucy" if role == "assistant" else "Beth"
-                transcript_lines.append("{}: {}".format(speaker, content))
+            if not role or not content:
+                continue
+            # Skip system messages and system-prompt echoed as user messages
+            if role == "system":
+                continue
+            if role == "user" and (
+                "You are Lucy" in content
+                or "virtual helper" in content[:100]
+                or len(content) > 500  # system prompts are long
+            ):
+                continue
+            speaker = "Lucy" if role == "assistant" else "Beth"
+            transcript_lines.append("{}: {}".format(speaker, content))
 
         transcript = "\n".join(transcript_lines)
 
@@ -610,34 +620,33 @@ def main():
 
     command = sys.argv[1]
 
+    beth_home = os.environ.get("BETH_PHONE_NUMBER")
+    beth_cell = os.environ.get("BETH_CELL_NUMBER")
+    if command in ("call", "call-evening", "test") and (not beth_home or not beth_cell):
+        log.error("BETH_PHONE_NUMBER and BETH_CELL_NUMBER env vars are required")
+        sys.exit(1)
+
     if command == "call":
-        # Morning call: update prompt, then call Beth
-        beth_home = os.environ.get("BETH_PHONE_NUMBER", "+19252781199")
-        beth_cell = os.environ.get("BETH_CELL_NUMBER", "+14403211704")
-        update_assistant_prompt()
-        make_call_with_fallback(beth_home, beth_cell)
+        overrides = build_call_overrides()
+        make_call_with_fallback(beth_home, beth_cell, overrides=overrides)
 
     elif command == "call-evening":
-        # Evening wind-down call
-        beth_home = os.environ.get("BETH_PHONE_NUMBER", "+19252781199")
-        beth_cell = os.environ.get("BETH_CELL_NUMBER", "+14403211704")
-        update_assistant_prompt(evening=True)
-        make_call_with_fallback(beth_home, beth_cell)
+        overrides = build_call_overrides(evening=True)
+        make_call_with_fallback(beth_home, beth_cell, overrides=overrides)
 
     elif command == "test":
-        # Test call to Connor
         test_phone = sys.argv[2] if len(sys.argv) > 2 \
             else os.environ.get("TEST_PHONE_NUMBER", "+14404885786")
-        update_assistant_prompt()
-        make_call(test_phone)
+        overrides = build_call_overrides()
+        make_call(test_phone, overrides=overrides)
 
     elif command == "post-process":
-        # Process recent call transcripts into memories
         process_recent_calls()
 
     elif command == "update":
-        # Just update the prompt (no call)
-        update_assistant_prompt()
+        # Preview overrides (no call)
+        overrides = build_call_overrides()
+        log.info("Overrides built (dry run)")
 
     else:
         print("Unknown command: {}".format(command))

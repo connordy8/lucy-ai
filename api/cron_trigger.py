@@ -11,7 +11,7 @@ class handler(BaseHTTPRequestHandler):
         # Verify this is a legitimate Vercel Cron invocation
         cron_secret = os.environ.get("CRON_SECRET", "")
         auth_header = self.headers.get("Authorization", "")
-        if cron_secret and auth_header != f"Bearer {cron_secret}":
+        if not cron_secret or auth_header != f"Bearer {cron_secret}":
             self.send_response(401)
             self.end_headers()
             self.wfile.write(b"Unauthorized")
@@ -28,6 +28,12 @@ class handler(BaseHTTPRequestHandler):
         from urllib.parse import urlparse, parse_qs
         query = parse_qs(urlparse(self.path).query)
         command = query.get("command", ["call"])[0]
+        allowed = {"call", "call-evening", "test", "post-process", "update"}
+        if command not in allowed:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(f"Invalid command: {command}".encode())
+            return
 
         # Trigger the GitHub Actions workflow_dispatch
         url = "https://api.github.com/repos/connordy8/lucy-ai/actions/workflows/lucy-call.yml/dispatches"
