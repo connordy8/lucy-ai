@@ -9,12 +9,13 @@ from http.server import BaseHTTPRequestHandler
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         # Verify this is a legitimate Vercel Cron invocation
-        cron_secret = os.environ.get("CRON_SECRET", "")
+        cron_secret = os.environ.get("CRON_SECRET", "").strip()
         auth_header = self.headers.get("Authorization", "")
         if not cron_secret or auth_header != f"Bearer {cron_secret}":
             self.send_response(401)
             self.end_headers()
-            self.wfile.write(b"Unauthorized")
+            msg = "Unauthorized"
+            self.wfile.write(msg.encode())
             return
 
         gh_token = os.environ.get("GITHUB_TOKEN", "").strip()
