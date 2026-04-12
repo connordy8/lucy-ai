@@ -638,7 +638,25 @@ def main():
         test_phone = sys.argv[2] if len(sys.argv) > 2 \
             else os.environ.get("TEST_PHONE_NUMBER", "+14404885786")
         overrides = build_call_overrides()
-        make_call(test_phone, overrides=overrides)
+        call_data = make_call(test_phone, overrides=overrides)
+        if call_data:
+            call_id = call_data.get("id", "")
+            log.info("Test call placed. ID: {}. Waiting...".format(call_id))
+            result = wait_for_call_end(call_id)
+            if result:
+                log.info("Test call ended. Reason: {}".format(
+                    result.get("endedReason", "unknown")))
+                log.info("Status: {}".format(result.get("status", "")))
+                log.info("Started: {} Ended: {}".format(
+                    result.get("startedAt", ""), result.get("endedAt", "")))
+                for key in ("error", "failedReason", "cost"):
+                    val = result.get(key)
+                    if val:
+                        log.info("  {}: {}".format(key, val))
+            else:
+                log.warning("Test call timed out")
+        else:
+            log.error("Test call failed to initiate — check Vapi API key and phone number")
 
     elif command == "post-process":
         process_recent_calls()
