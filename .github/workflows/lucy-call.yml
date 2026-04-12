@@ -66,6 +66,10 @@ jobs:
           GOOGLE_CALENDAR_ID: ${{ secrets.GOOGLE_CALENDAR_ID }}
           BETH_PHONE_NUMBER: ${{ secrets.BETH_PHONE_NUMBER }}
           BETH_CELL_NUMBER: ${{ secrets.BETH_CELL_NUMBER }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_PHONE_NUMBER: ${{ secrets.TWILIO_PHONE_NUMBER }}
+          CONNOR_PHONE_NUMBER: ${{ secrets.CONNOR_PHONE_NUMBER }}
         working-directory: lucy
         run: python lucy_call.py ${{ steps.calltype.outputs.cmd }}
 
