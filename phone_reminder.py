@@ -38,7 +38,7 @@ REMINDED_KEY = "bethReminded"
 # Vapi config
 VAPI_API = "https://api.vapi.ai"
 ASSISTANT_ID = "3c6d4439-1323-4d76-ba0d-548f9854f570"
-PHONE_NUMBER_ID = "e3894fb6-4ab9-4d49-a418-ea03a09b371a"
+PHONE_NUMBER_ID = "4563a603-3710-4e71-8a55-72b28b1d5413"
 
 
 def vapi_headers():
