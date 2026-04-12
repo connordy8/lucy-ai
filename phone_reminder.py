@@ -22,8 +22,9 @@ log = logging.getLogger("phone_reminder")
 
 # How far ahead to look for upcoming events (minutes)
 REMINDER_WINDOW_MIN = 40  # Don't call if less than 40 min away
-REMINDER_WINDOW_MAX = 50  # Don't call if more than 50 min away
-# (targets ~45 min before class, with 5-min cron tolerance)
+# Note: get_upcoming_events() queries up to 90 min ahead to batch
+# overlapping classes. The actual trigger window (40-50 min) is
+# enforced by reminder_check.py which gates workflow dispatch.
 
 # Only remind for these classes (case-insensitive partial match)
 REMINDER_CLASSES = [
@@ -235,6 +236,7 @@ def _place_call(number, overrides=None):
         "{}/call".format(VAPI_API),
         headers=vapi_headers(),
         json=payload,
+        timeout=30,
     )
     if resp.status_code in (200, 201):
         call_id = resp.json().get("id", "")
@@ -289,10 +291,14 @@ def _wait_and_check(call_id, timeout=300):
     import time
     for _ in range(timeout // 5):
         time.sleep(5)
-        resp = requests.get(
-            "{}/call/{}".format(VAPI_API, call_id),
-            headers=vapi_headers(),
-        )
+        try:
+            resp = requests.get(
+                "{}/call/{}".format(VAPI_API, call_id),
+                headers=vapi_headers(),
+                timeout=15,
+            )
+        except requests.exceptions.Timeout:
+            continue
         if resp.status_code != 200:
             continue
         data = resp.json()
@@ -548,7 +554,6 @@ def make_reminder_call(all_classes):
 def _notify_failure(all_classes):
     """Send SMS to Connor when all call attempts to Beth fail."""
     try:
-        import requests as req
         twilio_sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
         twilio_token = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
         twilio_from = os.environ.get("TWILIO_PHONE_NUMBER", "").strip()
@@ -566,11 +571,12 @@ def _notify_failure(all_classes):
             "twice each)."
         ).format(classes=classes_str)
 
-        req.post(
+        requests.post(
             "https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json"
             .format(twilio_sid),
             auth=(twilio_sid, twilio_token),
             data={"From": twilio_from, "To": connor_phone, "Body": msg},
+            timeout=15,
         )
         log.info("  Failure alert sent to Connor")
     except Exception as e:
@@ -591,18 +597,17 @@ def mark_as_reminded(service, calendar_id, event_id):
         ).execute()
         private = ev.get("extendedProperties", {}).get("private", {})
 
-        # Preserve followUpRemindAt if Beth scheduled one during this call
-        updated = {
-            REMINDED_KEY: datetime.now(timezone.utc).isoformat(),
-        }
+        # Merge into existing private properties (Google Calendar patch
+        # replaces the entire private dict, so we must include all keys)
+        private[REMINDED_KEY] = datetime.now(timezone.utc).isoformat()
         # Only clear followUpRemindAt if there ISN'T one set
         if not private.get("followUpRemindAt"):
-            updated["followUpRemindAt"] = ""
+            private["followUpRemindAt"] = ""
 
         service.events().patch(
             calendarId=calendar_id,
             eventId=event_id,
-            body={"extendedProperties": {"private": updated}},
+            body={"extendedProperties": {"private": dict(private)}},
         ).execute()
         log.info("  Marked event as reminded: {}".format(event_id[:16]))
         if private.get("followUpRemindAt"):

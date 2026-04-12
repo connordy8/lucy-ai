@@ -151,12 +151,16 @@ def save_reminder_preferences(args):
 
         if not wants_reminder:
             try:
+                cur = service.events().get(
+                    calendarId=calendar_id, eventId=event_id
+                ).execute()
+                priv = dict(
+                    cur.get("extendedProperties", {}).get("private", {}))
+                priv["bethSkipReminder"] = now_pt.isoformat()
                 service.events().patch(
                     calendarId=calendar_id,
                     eventId=event_id,
-                    body={"extendedProperties": {
-                        "private": {"bethSkipReminder": now_pt.isoformat()}
-                    }},
+                    body={"extendedProperties": {"private": priv}},
                 ).execute()
                 skipped.append(clean)
             except Exception:
@@ -235,18 +239,27 @@ def schedule_follow_up_reminder(args):
     if minutes_before and int(minutes_before) > 0:
         follow_up_dt = class_start - timedelta(minutes=int(minutes_before))
     elif remind_at:
-        try:
-            # Try parsing as HH:MM (e.g., "9:45")
-            t = datetime.strptime(remind_at, "%H:%M").time()
-            follow_up_dt = now_pt.replace(
-                hour=t.hour, minute=t.minute, second=0, microsecond=0)
-        except ValueError:
+        parsed = None
+        # Try multiple time formats
+        for fmt in ("%H:%M", "%I:%M %p", "%I:%M%p", "%I:%M %P",
+                    "%I %p", "%I%p"):
+            try:
+                t = datetime.strptime(remind_at.strip(), fmt).time()
+                parsed = now_pt.replace(
+                    hour=t.hour, minute=t.minute,
+                    second=0, microsecond=0)
+                break
+            except ValueError:
+                continue
+        if not parsed:
             try:
                 # Try as ISO datetime
-                follow_up_dt = datetime.fromisoformat(
+                parsed = datetime.fromisoformat(
                     remind_at).astimezone(PACIFIC)
             except ValueError:
-                return "I didn't understand that time. Could you say it differently?"
+                return ("I didn't understand that time. "
+                        "Could you say it differently?")
+        follow_up_dt = parsed
     else:
         # Default: 15 minutes before class
         follow_up_dt = class_start - timedelta(minutes=15)
@@ -259,19 +272,22 @@ def schedule_follow_up_reminder(args):
     if follow_up_dt >= class_start:
         return "That's after the class starts. Would you like an earlier time?"
 
-    # Write to calendar extended properties
+    # Write to calendar extended properties (read-then-merge to
+    # preserve any other private properties on the event)
     event_id = target_event.get("id", "")
     clean_name = _clean_summary(target_event.get("summary", ""))
     try:
+        current = service.events().get(
+            calendarId=calendar_id, eventId=event_id
+        ).execute()
+        private = dict(
+            current.get("extendedProperties", {}).get("private", {}))
+        private["followUpRemindAt"] = follow_up_dt.isoformat()
+        private["bethReminded"] = ""  # Clear so it's eligible again
         service.events().patch(
             calendarId=calendar_id,
             eventId=event_id,
-            body={"extendedProperties": {
-                "private": {
-                    "followUpRemindAt": follow_up_dt.isoformat(),
-                    "bethReminded": "",  # Clear so it's eligible again
-                }
-            }},
+            body={"extendedProperties": {"private": private}},
         ).execute()
     except Exception as e:
         return "Sorry, I had trouble scheduling that reminder."
@@ -291,7 +307,19 @@ TOOLS = {
 
 
 class handler(BaseHTTPRequestHandler):
+    def _check_auth(self):
+        """Verify the request comes from Vapi (or is otherwise authorized)."""
+        secret = os.environ.get("VAPI_SERVER_SECRET", "").strip()
+        if not secret:
+            return True  # No secret configured — allow (backward compat)
+        header = self.headers.get("x-vapi-secret", "")
+        return header == secret
+
     def do_POST(self):
+        if not self._check_auth():
+            self._respond(401, {"error": "Unauthorized"})
+            return
+
         try:
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length)

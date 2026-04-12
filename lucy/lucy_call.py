@@ -186,6 +186,7 @@ def save_memory(call_data):
             "Authorization": "Bearer {}".format(openai_key),
             "Content-Type": "application/json",
         },
+        timeout=30,
         json={
             "model": "gpt-4o-mini",
             "messages": [
@@ -376,6 +377,7 @@ def make_call(phone_number, overrides=None):
         "{}/call".format(VAPI_API),
         headers=vapi_headers(),
         json=payload,
+        timeout=30,
     )
 
     if resp.status_code in (200, 201):
@@ -394,10 +396,14 @@ def wait_for_call_end(call_id, timeout=300, poll_interval=10):
     while elapsed < timeout:
         time.sleep(poll_interval)
         elapsed += poll_interval
-        resp = requests.get(
-            "{}/call/{}".format(VAPI_API, call_id),
-            headers=vapi_headers(),
-        )
+        try:
+            resp = requests.get(
+                "{}/call/{}".format(VAPI_API, call_id),
+                headers=vapi_headers(),
+                timeout=15,
+            )
+        except requests.exceptions.Timeout:
+            continue
         if resp.status_code == 200:
             data = resp.json()
             if data.get("status") == "ended":
@@ -530,6 +536,7 @@ def _notify_failure(call_type):
             .format(twilio_sid),
             auth=(twilio_sid, twilio_token),
             data={"From": twilio_from, "To": connor_phone, "Body": msg},
+            timeout=15,
         )
         log.info("  Failure alert sent to Connor")
     except Exception as e:
@@ -542,6 +549,7 @@ def get_recent_calls(limit=5):
         "{}/call".format(VAPI_API),
         headers=vapi_headers(),
         params={"limit": limit, "assistantId": ASSISTANT_ID},
+        timeout=15,
     )
     if resp.status_code == 200:
         return resp.json()
@@ -576,6 +584,7 @@ def process_recent_calls():
         resp = requests.get(
             "{}/call/{}".format(VAPI_API, call_id),
             headers=vapi_headers(),
+            timeout=15,
         )
         if resp.status_code != 200:
             continue
