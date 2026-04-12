@@ -368,7 +368,8 @@ def make_reminder_call(all_classes):
     if len(all_classes) == 1:
         first_msg = (
             "Hi Beth! It's Lucy. Just a quick reminder — you've got "
-            "{} coming up at {}. You'll want to start getting ready soon!"
+            "{} coming up at {}. You'll want to start getting ready soon! "
+            "Would you like me to call you again closer to class time?"
         ).format(first["name"], first["time"])
         voicemail_msg = (
             "Hi Beth, it's your assistant Lucy. "
@@ -382,7 +383,8 @@ def make_reminder_call(all_classes):
         first_msg = (
             "Hi Beth! It's Lucy. Just a quick reminder — you've got "
             "a couple of classes coming up: {}. "
-            "You'll want to start getting ready soon!"
+            "Which one are you thinking of going to? "
+            "And would you like me to call you again closer to class time?"
         ).format(times)
         voicemail_msg = (
             "Hi Beth, it's your assistant Lucy. "
