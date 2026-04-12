@@ -15,7 +15,11 @@ from http.server import BaseHTTPRequestHandler
 
 REMINDER_WINDOW_MIN = 40
 REMINDER_WINDOW_MAX = 50
-REMINDER_CLASSES = ["zumba", "aquacise", "functional strength"]
+REMINDER_CLASSES = [
+    "zumba", "aquacise", "functional strength", "ujam",
+    "posture", "mat yoga", "foreverfit", "forever fit",
+    "pickleball", "let's stretch", "lets stretch", "tai chi",
+]
 REMINDED_KEY = "bethReminded"
 
 

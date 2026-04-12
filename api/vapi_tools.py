@@ -213,7 +213,10 @@ def schedule_follow_up_reminder(args):
             target_event = ev
             break
         # Fuzzy match on any reminder class
-        for cls in ["zumba", "aquacise", "functional strength"]:
+        for cls in ["zumba", "aquacise", "functional strength", "ujam",
+                     "posture", "mat yoga", "foreverfit", "forever fit",
+                     "pickleball", "let's stretch", "lets stretch",
+                     "tai chi"]:
             if cls in class_name and cls in summary:
                 target_event = ev
                 break
@@ -320,6 +323,9 @@ class handler(BaseHTTPRequestHandler):
                 try:
                     result = handler_fn(args)
                 except Exception as e:
+                    import traceback
+                    print("Tool error in {}: {} — {}".format(
+                        name, e, traceback.format_exc()))
                     result = "Sorry, I couldn't look that up right now."
             else:
                 result = "Unknown tool: {}".format(name)

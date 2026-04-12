@@ -76,7 +76,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         working-directory: lucy
         run: |
-          sleep 10
+          sleep 30
           python lucy_call.py post-process
 
       - name: Commit new memories

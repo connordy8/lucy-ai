@@ -67,14 +67,19 @@ def get_calendar_service():
 
 
 def get_upcoming_events(service, calendar_id):
-    """Get all events starting in the next 90 minutes.
+    """Get events that need reminders: normal window + follow-ups.
 
-    We look further ahead than the trigger window (40-50 min) so we
-    can batch overlapping/close classes into a single reminder call.
-    E.g., Zumba at 10:00 and Functional Strength at 10:30 — Beth gets
-    one call 45 min before Zumba mentioning both, so she can choose.
+    Two queries:
+    1. Normal: classes starting in 40-90 min (for batching overlapping classes)
+    2. Follow-ups: ALL events today that have followUpRemindAt set and due now
+       (these may start in < 40 min, so the normal window would miss them)
     """
+    from zoneinfo import ZoneInfo
+    PACIFIC = ZoneInfo("America/Los_Angeles")
     now = datetime.now(timezone.utc)
+    now_pt = now.astimezone(PACIFIC)
+
+    # --- Query 1: Normal window (40-90 min out) ---
     window_start = now + timedelta(minutes=REMINDER_WINDOW_MIN)
     window_end = now + timedelta(minutes=90)
 
@@ -87,7 +92,40 @@ def get_upcoming_events(service, calendar_id):
         maxResults=10,
     ).execute()
 
-    return resp.get("items", [])
+    events = resp.get("items", [])
+    seen_ids = {e.get("id") for e in events}
+
+    # --- Query 2: Follow-up reminders due now (all events today) ---
+    today_start = now_pt.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = now_pt.replace(hour=23, minute=59, second=59, microsecond=0)
+
+    all_today = service.events().list(
+        calendarId=calendar_id,
+        timeMin=today_start.isoformat(),
+        timeMax=today_end.isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+        maxResults=30,
+    ).execute().get("items", [])
+
+    for ev in all_today:
+        if ev.get("id") in seen_ids:
+            continue
+        private = ev.get("extendedProperties", {}).get("private", {})
+        follow_up = private.get("followUpRemindAt", "")
+        if not follow_up:
+            continue
+        try:
+            follow_up_dt = datetime.fromisoformat(follow_up).astimezone(PACIFIC)
+            if now_pt <= follow_up_dt <= now_pt + timedelta(minutes=6):
+                log.info("  Adding follow-up event: {}".format(
+                    ev.get("summary", "")))
+                events.append(ev)
+                seen_ids.add(ev.get("id"))
+        except ValueError:
+            pass
+
+    return events
 
 
 def should_call(event):
@@ -220,6 +258,11 @@ VOICEMAIL_PHRASES = [
     "please record",
     "if you are satisfied with your message",
     "please try again later",
+    "subscriber you have dialed",
+    "number is not in service",
+    "mailbox is full",
+    "cannot be completed as dialed",
+    "the person you are calling",
 ]
 
 
@@ -498,25 +541,73 @@ def make_reminder_call(all_classes):
         log.info("No answer on {}, trying next...".format(label))
 
     log.warning("All 4 call attempts failed — Beth did not answer")
+    _notify_failure(all_classes)
     return False
 
 
-def mark_as_reminded(service, calendar_id, event_id):
+def _notify_failure(all_classes):
+    """Send SMS to Connor when all call attempts to Beth fail."""
     try:
+        import requests as req
+        twilio_sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+        twilio_token = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+        twilio_from = os.environ.get("TWILIO_PHONE_NUMBER", "").strip()
+        connor_phone = os.environ.get("CONNOR_PHONE_NUMBER", "").strip()
+
+        if not all([twilio_sid, twilio_token, twilio_from, connor_phone]):
+            log.warning("  Twilio/Connor phone not configured — "
+                        "cannot send failure alert")
+            return
+
+        classes_str = ", ".join(c["name"] for c in all_classes)
+        msg = (
+            "⚠️ Lucy couldn't reach Beth for her class reminder "
+            "({classes}). All 4 call attempts failed (home & cell, "
+            "twice each)."
+        ).format(classes=classes_str)
+
+        req.post(
+            "https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json"
+            .format(twilio_sid),
+            auth=(twilio_sid, twilio_token),
+            data={"From": twilio_from, "To": connor_phone, "Body": msg},
+        )
+        log.info("  Failure alert sent to Connor")
+    except Exception as e:
+        log.warning("  Failed to send failure alert: {}".format(e))
+
+
+def mark_as_reminded(service, calendar_id, event_id):
+    """Mark event as reminded, but preserve any follow-up Beth scheduled.
+
+    During the call, Beth may have asked Lucy to call back at a specific
+    time. The scheduleFollowUpReminder tool writes followUpRemindAt to the
+    event. We must NOT overwrite that here — only set bethReminded.
+    """
+    try:
+        # Read current extended properties first
+        ev = service.events().get(
+            calendarId=calendar_id, eventId=event_id
+        ).execute()
+        private = ev.get("extendedProperties", {}).get("private", {})
+
+        # Preserve followUpRemindAt if Beth scheduled one during this call
+        updated = {
+            REMINDED_KEY: datetime.now(timezone.utc).isoformat(),
+        }
+        # Only clear followUpRemindAt if there ISN'T one set
+        if not private.get("followUpRemindAt"):
+            updated["followUpRemindAt"] = ""
+
         service.events().patch(
             calendarId=calendar_id,
             eventId=event_id,
-            body={
-                "extendedProperties": {
-                    "private": {
-                        REMINDED_KEY: datetime.now(
-                            timezone.utc).isoformat(),
-                        "followUpRemindAt": "",  # Clear any follow-up
-                    }
-                }
-            },
+            body={"extendedProperties": {"private": updated}},
         ).execute()
         log.info("  Marked event as reminded: {}".format(event_id[:16]))
+        if private.get("followUpRemindAt"):
+            log.info("  Preserved follow-up at: {}".format(
+                private["followUpRemindAt"]))
     except Exception as e:
         log.warning("  Failed to mark event: {}".format(e))
 

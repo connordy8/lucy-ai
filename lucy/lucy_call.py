@@ -113,7 +113,7 @@ def get_todays_calendar():
 
         entry = "- {} at {}".format(clean, time_label) if time_label \
             else "- {}".format(clean)
-        if location and "Tice Creek" not in location:
+        if location:
             entry += " ({})".format(location.split(",")[0])
         lines.append(entry)
 
@@ -419,6 +419,11 @@ VOICEMAIL_PHRASES = [
     "please record",
     "if you are satisfied with your message",
     "please try again later",
+    "subscriber you have dialed",
+    "number is not in service",
+    "mailbox is full",
+    "cannot be completed as dialed",
+    "the person you are calling",
 ]
 
 
@@ -498,7 +503,37 @@ def make_call_with_fallback(home_phone, cell_phone, overrides=None):
             result.get("endedReason", "unknown") if result else "timeout"))
 
     log.warning("All 4 call attempts failed — Beth did not answer")
+    _notify_failure("evening bedtime reminder")
     return None
+
+
+def _notify_failure(call_type):
+    """Send SMS to Connor when all call attempts to Beth fail."""
+    try:
+        twilio_sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+        twilio_token = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+        twilio_from = os.environ.get("TWILIO_PHONE_NUMBER", "").strip()
+        connor_phone = os.environ.get("CONNOR_PHONE_NUMBER", "").strip()
+
+        if not all([twilio_sid, twilio_token, twilio_from, connor_phone]):
+            log.warning("  Twilio/Connor phone not configured — "
+                        "cannot send failure alert")
+            return
+
+        msg = (
+            "⚠️ Lucy couldn't reach Beth for her {call_type}. "
+            "All 4 call attempts failed (home & cell, twice each)."
+        ).format(call_type=call_type)
+
+        requests.post(
+            "https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json"
+            .format(twilio_sid),
+            auth=(twilio_sid, twilio_token),
+            data={"From": twilio_from, "To": connor_phone, "Body": msg},
+        )
+        log.info("  Failure alert sent to Connor")
+    except Exception as e:
+        log.warning("  Failed to send failure alert: {}".format(e))
 
 
 def get_recent_calls(limit=5):
