@@ -172,9 +172,118 @@ def save_reminder_preferences(args):
     return ". ".join(parts) if parts else "Beth will get reminders for all events today."
 
 
+def schedule_follow_up_reminder(args):
+    """Schedule a follow-up reminder call for a specific class.
+
+    Lucy calls this during a class reminder conversation when Beth asks
+    to be reminded again at a specific time (e.g., "remind me again in
+    15 minutes" or "call me at 9:45").
+
+    Writes followUpRemindAt to the Google Calendar event's extended
+    properties. The reminder_check cron picks this up every 5 min.
+    """
+    service, calendar_id = _get_calendar_service()
+    if not service:
+        return "Could not schedule the follow-up reminder."
+
+    class_name = args.get("class_name", "").lower()
+    # remind_at: ISO time or minutes-before-class
+    remind_at = args.get("remind_at", "")
+    minutes_before = args.get("minutes_before", 0)
+
+    now_pt = datetime.now(PACIFIC)
+    today_end = now_pt.replace(hour=23, minute=59, second=59, microsecond=0)
+
+    # Find the matching event
+    resp = service.events().list(
+        calendarId=calendar_id,
+        timeMin=now_pt.isoformat(),
+        timeMax=today_end.isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+        maxResults=20,
+    ).execute()
+
+    target_event = None
+    for ev in resp.get("items", []):
+        if ev.get("status") == "cancelled":
+            continue
+        summary = ev.get("summary", "").lower()
+        if class_name and class_name in summary:
+            target_event = ev
+            break
+        # Fuzzy match on any reminder class
+        for cls in ["zumba", "aquacise", "functional strength"]:
+            if cls in class_name and cls in summary:
+                target_event = ev
+                break
+        if target_event:
+            break
+
+    if not target_event:
+        return "I couldn't find that class on the calendar today."
+
+    # Calculate the follow-up time
+    start_str = target_event.get("start", {}).get("dateTime", "")
+    if not start_str:
+        return "Could not determine when that class starts."
+    class_start = datetime.fromisoformat(start_str).astimezone(PACIFIC)
+
+    if minutes_before and int(minutes_before) > 0:
+        follow_up_dt = class_start - timedelta(minutes=int(minutes_before))
+    elif remind_at:
+        try:
+            # Try parsing as HH:MM (e.g., "9:45")
+            t = datetime.strptime(remind_at, "%H:%M").time()
+            follow_up_dt = now_pt.replace(
+                hour=t.hour, minute=t.minute, second=0, microsecond=0)
+        except ValueError:
+            try:
+                # Try as ISO datetime
+                follow_up_dt = datetime.fromisoformat(
+                    remind_at).astimezone(PACIFIC)
+            except ValueError:
+                return "I didn't understand that time. Could you say it differently?"
+    else:
+        # Default: 15 minutes before class
+        follow_up_dt = class_start - timedelta(minutes=15)
+
+    # Don't schedule in the past
+    if follow_up_dt <= now_pt:
+        return "That time has already passed. Would you like a different time?"
+
+    # Don't schedule after the class starts
+    if follow_up_dt >= class_start:
+        return "That's after the class starts. Would you like an earlier time?"
+
+    # Write to calendar extended properties
+    event_id = target_event.get("id", "")
+    clean_name = _clean_summary(target_event.get("summary", ""))
+    try:
+        service.events().patch(
+            calendarId=calendar_id,
+            eventId=event_id,
+            body={"extendedProperties": {
+                "private": {
+                    "followUpRemindAt": follow_up_dt.isoformat(),
+                    "bethReminded": "",  # Clear so it's eligible again
+                }
+            }},
+        ).execute()
+    except Exception as e:
+        return "Sorry, I had trouble scheduling that reminder."
+
+    follow_up_str = follow_up_dt.strftime("%-I:%M %p")
+    return (
+        "Follow-up reminder scheduled for {} for {}. "
+        "I'll call you back then!"
+    ).format(follow_up_str, clean_name)
+
+
 TOOLS = {
     "getCalendarEvents": get_calendar_events,
     "saveReminderPreferences": save_reminder_preferences,
+    "scheduleFollowUpReminder": schedule_follow_up_reminder,
 }
 
 

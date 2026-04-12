@@ -91,12 +91,17 @@ def get_upcoming_events(service, calendar_id):
 
 
 def should_call(event):
+    """Check if this event needs a reminder call.
+
+    Two paths:
+    1. Follow-up: Beth requested a callback (followUpRemindAt is due now)
+    2. Normal: first reminder, class in 40-90 min, not yet reminded
+    """
     if event.get("status") == "cancelled":
         return False
 
     summary = event.get("summary", "").lower()
 
-    # Only remind for Zumba and Aquacise
     if not any(cls in summary for cls in REMINDER_CLASSES):
         log.info("  Skipping (not a reminder class): {}".format(
             event.get("summary", "")))
@@ -104,10 +109,6 @@ def should_call(event):
 
     ext_props = event.get("extendedProperties", {})
     private = ext_props.get("private", {})
-    if private.get(REMINDED_KEY):
-        log.info("  Already reminded: {}".format(
-            event.get("summary", "")))
-        return False
 
     # Skip if Beth declined this reminder via Lucy
     if private.get("bethSkipReminder"):
@@ -119,8 +120,28 @@ def should_call(event):
     if "dateTime" not in start:
         return False
 
-    # Only call for classes at 10:30 AM or later
+    # Check for follow-up reminder due now
     from zoneinfo import ZoneInfo
+    now_pt = datetime.now(ZoneInfo("America/Los_Angeles"))
+    follow_up = private.get("followUpRemindAt", "")
+    if follow_up:
+        try:
+            follow_up_dt = datetime.fromisoformat(follow_up).astimezone(
+                ZoneInfo("America/Los_Angeles"))
+            if now_pt <= follow_up_dt <= now_pt + timedelta(minutes=6):
+                log.info("  Follow-up reminder due NOW for: {}".format(
+                    event.get("summary", "")))
+                return True
+        except ValueError:
+            pass
+
+    # Normal path: skip if already reminded
+    if private.get(REMINDED_KEY):
+        log.info("  Already reminded: {}".format(
+            event.get("summary", "")))
+        return False
+
+    # Only call for classes at 10:30 AM or later
     start_dt = datetime.fromisoformat(start["dateTime"]).astimezone(
         ZoneInfo("America/Los_Angeles"))
     if start_dt.hour < 10 or (start_dt.hour == 10 and start_dt.minute < 30):
@@ -306,10 +327,15 @@ def _build_class_reminder_prompt(classes):
         "\n\n## THIS CALL — CLASS REMINDER\n"
         "You are calling to remind Beth about {}.\n"
         "{}"
+        "After delivering the reminder, ask Beth: \"Would you like me "
+        "to call you again closer to class time?\" If she says yes, ask "
+        "when she'd like the reminder (e.g., \"How about 15 minutes "
+        "before?\" or \"What time would you like me to call?\"). Then "
+        "use the scheduleFollowUpReminder tool to schedule it.\n"
         "Do NOT ask about bedtime, CPAP, or sleeping. "
         "This is a daytime class reminder.\n"
-        "Do NOT try to extend the conversation. Just deliver the "
-        "reminder warmly and wrap up.\n"
+        "After the reminder is delivered (and follow-up scheduled if "
+        "requested), wrap up warmly.\n"
     ).format(class_list, choice_instruction)
 
     return prompt
@@ -367,11 +393,57 @@ def make_reminder_call(all_classes):
     # Build per-call overrides so we never mutate the shared assistant
     prompt = _build_class_reminder_prompt(all_classes)
 
+    tool_server = os.environ.get(
+        "LUCY_API_BASE", "https://lucy-ai-eight.vercel.app")
+
     overrides = {
         "model": {
             "provider": "openai",
             "model": "gpt-4o-mini",
             "messages": [{"role": "system", "content": prompt}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "scheduleFollowUpReminder",
+                        "description": (
+                            "Schedule a follow-up reminder call for Beth. "
+                            "Use when Beth asks to be reminded again before "
+                            "a class."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "class_name": {
+                                    "type": "string",
+                                    "description": (
+                                        "Name of the class, e.g. 'Zumba'"
+                                    ),
+                                },
+                                "minutes_before": {
+                                    "type": "integer",
+                                    "description": (
+                                        "Minutes before class to call back, "
+                                        "e.g. 15"
+                                    ),
+                                },
+                                "remind_at": {
+                                    "type": "string",
+                                    "description": (
+                                        "Specific time to call back, e.g. "
+                                        "'9:45' or '10:15'. Use this OR "
+                                        "minutes_before, not both."
+                                    ),
+                                },
+                            },
+                            "required": ["class_name"],
+                        },
+                    },
+                    "server": {
+                        "url": "{}/api/vapi_tools".format(tool_server)
+                    },
+                },
+            ],
         },
         "firstMessage": first_msg,
         "voicemailMessage": voicemail_msg,
@@ -411,6 +483,7 @@ def mark_as_reminded(service, calendar_id, event_id):
                     "private": {
                         REMINDED_KEY: datetime.now(
                             timezone.utc).isoformat(),
+                        "followUpRemindAt": "",  # Clear any follow-up
                     }
                 }
             },

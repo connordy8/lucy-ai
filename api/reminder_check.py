@@ -37,12 +37,56 @@ def _get_calendar_service():
 
 
 def _has_upcoming_class():
-    """Check if any reminder-eligible class starts in the 40-50 min window."""
+    """Check if any reminder-eligible class needs a call right now.
+
+    Two triggers:
+    1. Normal: a class starts in 40-50 min (first reminder)
+    2. Follow-up: Beth asked for a callback at a specific time
+       (followUpRemindAt is within the current 5-min window)
+    """
+    from zoneinfo import ZoneInfo
+    PACIFIC = ZoneInfo("America/Los_Angeles")
+
     service, calendar_id = _get_calendar_service()
     if not service or not calendar_id:
         return False, "Calendar not configured"
 
     now = datetime.now(timezone.utc)
+    now_pt = now.astimezone(PACIFIC)
+
+    # --- Check 1: Follow-up reminders due NOW ---
+    # Scan all events today for followUpRemindAt in the current window
+    today_start = now_pt.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = now_pt.replace(hour=23, minute=59, second=59, microsecond=0)
+
+    all_today = service.events().list(
+        calendarId=calendar_id,
+        timeMin=today_start.isoformat(),
+        timeMax=today_end.isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+        maxResults=30,
+    ).execute().get("items", [])
+
+    for ev in all_today:
+        if ev.get("status") == "cancelled":
+            continue
+        private = ev.get("extendedProperties", {}).get("private", {})
+        follow_up = private.get("followUpRemindAt", "")
+        if not follow_up:
+            continue
+        try:
+            follow_up_dt = datetime.fromisoformat(follow_up).astimezone(PACIFIC)
+        except ValueError:
+            continue
+        # Is the follow-up time within now and now+6 min? (5-min cron + 1 min buffer)
+        if now_pt <= follow_up_dt <= now_pt + timedelta(minutes=6):
+            return True, (
+                f"Follow-up reminder due: {ev.get('summary', '')} "
+                f"(requested at {follow_up})"
+            )
+
+    # --- Check 2: Normal first reminder (class in 40-50 min) ---
     window_start = now + timedelta(minutes=REMINDER_WINDOW_MIN)
     window_end = now + timedelta(minutes=REMINDER_WINDOW_MAX)
 
@@ -64,25 +108,22 @@ def _has_upcoming_class():
         if not any(cls in summary for cls in REMINDER_CLASSES):
             continue
 
-        # Skip already-reminded events
         ext_props = ev.get("extendedProperties", {})
         private = ext_props.get("private", {})
         if private.get(REMINDED_KEY) or private.get("bethSkipReminder"):
             continue
 
-        # Skip classes before 10:30 AM PT
         start = ev.get("start", {})
         if "dateTime" not in start:
             continue
-        from zoneinfo import ZoneInfo
         start_dt = datetime.fromisoformat(
-            start["dateTime"]).astimezone(ZoneInfo("America/Los_Angeles"))
+            start["dateTime"]).astimezone(PACIFIC)
         if start_dt.hour < 10 or (start_dt.hour == 10 and start_dt.minute < 30):
             continue
 
         return True, f"Found: {ev.get('summary', '')} at {start['dateTime']}"
 
-    return False, f"No classes in window ({len(events)} events checked)"
+    return False, f"No reminders needed ({len(events)} events in normal window, {len(all_today)} events today)"
 
 
 class handler(BaseHTTPRequestHandler):
