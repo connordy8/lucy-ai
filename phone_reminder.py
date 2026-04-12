@@ -170,7 +170,13 @@ def extract_class_info(event):
     except (ValueError, AttributeError):
         time_str = "soon"
 
-    return {"name": clean_name, "time": time_str, "start_dt": start_dt}
+    location = event.get("location", "")
+    # Simplify long addresses to just the venue name
+    if location and "," in location:
+        location = location.split(",")[0]
+
+    return {"name": clean_name, "time": time_str, "start_dt": start_dt,
+            "location": location}
 
 
 def _place_call(number, overrides=None):
@@ -302,10 +308,17 @@ def _build_class_reminder_prompt(classes):
 
     prompt = template.replace("{current_time}", current_time)
 
+    # Build class details with locations
+    def _class_detail(c):
+        s = "{} at {}".format(c["name"], c["time"])
+        if c.get("location"):
+            s += " at {}".format(c["location"])
+        return s
+
     if len(classes) == 1:
-        cal_ctx = "Beth has {} at {} today.".format(
-            classes[0]["name"], classes[0]["time"])
-        class_list = "{} at {}".format(classes[0]["name"], classes[0]["time"])
+        detail = _class_detail(classes[0])
+        cal_ctx = "Beth has {} today.".format(detail)
+        class_list = detail
         conversation_flow = (
             "STEP 1: Remind Beth about {} and ask if she's planning to go.\n"
             "STEP 2: Wait for her response. Then ask: "
@@ -319,9 +332,9 @@ def _build_class_reminder_prompt(classes):
             "and say goodbye.\n"
         ).format(class_list)
     else:
-        items = ["{} at {}".format(c["name"], c["time"]) for c in classes]
-        cal_ctx = "Beth has these classes today: " + ", ".join(items)
-        class_list = " and ".join(items)
+        details = [_class_detail(c) for c in classes]
+        cal_ctx = "Beth has these classes today: " + ", ".join(details)
+        class_list = " and ".join(details)
         conversation_flow = (
             "STEP 1: Tell Beth she has multiple classes coming up: {}. "
             "Ask which one she's thinking of going to.\n"
@@ -334,7 +347,7 @@ def _build_class_reminder_prompt(classes):
             "STEP 4: Once she gives a time, use the "
             "scheduleFollowUpReminder tool, confirm it's set, "
             "and say goodbye.\n"
-        ).format(", ".join(items))
+        ).format(", ".join(details))
 
     prompt = prompt.replace("{calendar_context}", cal_ctx)
     prompt = prompt.replace("{memory_context}", "(class reminder call)")
@@ -345,6 +358,8 @@ def _build_class_reminder_prompt(classes):
         "IMPORTANT: Only ask ONE question at a time. Wait for Beth to "
         "respond before moving to the next step. Never combine multiple "
         "questions in a single message.\n\n"
+        "If Beth asks where a class is, tell her the location. You have "
+        "this information — never say you don't know.\n\n"
         "Follow this conversation flow:\n"
         "{}"
         "\nDo NOT ask about bedtime, CPAP, or sleeping. "
