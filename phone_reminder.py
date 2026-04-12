@@ -306,18 +306,34 @@ def _build_class_reminder_prompt(classes):
         cal_ctx = "Beth has {} at {} today.".format(
             classes[0]["name"], classes[0]["time"])
         class_list = "{} at {}".format(classes[0]["name"], classes[0]["time"])
-        choice_instruction = (
-            "1. Keep it brief — remind her what class is coming up and when.\n"
-            "2. If she acknowledges, say goodbye and end the call.\n"
-        )
+        conversation_flow = (
+            "STEP 1: Remind Beth about {} and ask if she's planning to go.\n"
+            "STEP 2: Wait for her response. Then ask: "
+            "\"Would you like me to call you again closer to class time "
+            "as a reminder to get ready?\"\n"
+            "STEP 3: If she says yes, ask WHEN she'd like the call "
+            "(e.g., \"How about 15 minutes before?\"). "
+            "If no, wrap up warmly.\n"
+            "STEP 4: Once she gives a time, use the "
+            "scheduleFollowUpReminder tool, confirm it's set, "
+            "and say goodbye.\n"
+        ).format(class_list)
     else:
         items = ["{} at {}".format(c["name"], c["time"]) for c in classes]
         cal_ctx = "Beth has these classes today: " + ", ".join(items)
         class_list = " and ".join(items)
-        choice_instruction = (
-            "1. Tell Beth she has multiple classes coming up: {}.\n"
-            "2. Let her know she can choose which one to go to.\n"
-            "3. If she picks one or acknowledges, say goodbye and end the call.\n"
+        conversation_flow = (
+            "STEP 1: Tell Beth she has multiple classes coming up: {}. "
+            "Ask which one she's thinking of going to.\n"
+            "STEP 2: Wait for her response. Then ask: "
+            "\"Would you like me to call you again closer to class time "
+            "as a reminder to get ready?\"\n"
+            "STEP 3: If she says yes, ask WHEN she'd like the call "
+            "(e.g., \"How about 15 minutes before?\"). "
+            "If no, wrap up warmly.\n"
+            "STEP 4: Once she gives a time, use the "
+            "scheduleFollowUpReminder tool, confirm it's set, "
+            "and say goodbye.\n"
         ).format(", ".join(items))
 
     prompt = prompt.replace("{calendar_context}", cal_ctx)
@@ -325,18 +341,15 @@ def _build_class_reminder_prompt(classes):
 
     prompt += (
         "\n\n## THIS CALL — CLASS REMINDER\n"
-        "You are calling to remind Beth about {}.\n"
+        "You are calling to remind Beth about {}.\n\n"
+        "IMPORTANT: Only ask ONE question at a time. Wait for Beth to "
+        "respond before moving to the next step. Never combine multiple "
+        "questions in a single message.\n\n"
+        "Follow this conversation flow:\n"
         "{}"
-        "After delivering the reminder, ask Beth: \"Would you like me "
-        "to call you again closer to class time?\" If she says yes, ask "
-        "when she'd like the reminder (e.g., \"How about 15 minutes "
-        "before?\" or \"What time would you like me to call?\"). Then "
-        "use the scheduleFollowUpReminder tool to schedule it.\n"
-        "Do NOT ask about bedtime, CPAP, or sleeping. "
+        "\nDo NOT ask about bedtime, CPAP, or sleeping. "
         "This is a daytime class reminder.\n"
-        "After the reminder is delivered (and follow-up scheduled if "
-        "requested), wrap up warmly.\n"
-    ).format(class_list, choice_instruction)
+    ).format(class_list, conversation_flow)
 
     return prompt
 
@@ -368,8 +381,7 @@ def make_reminder_call(all_classes):
     if len(all_classes) == 1:
         first_msg = (
             "Hi Beth! It's Lucy. Just a quick reminder — you've got "
-            "{} coming up at {}. You'll want to start getting ready soon! "
-            "Would you like me to call you again closer to class time?"
+            "{} coming up at {}. Are you planning to go?"
         ).format(first["name"], first["time"])
         voicemail_msg = (
             "Hi Beth, it's your assistant Lucy. "
@@ -383,8 +395,7 @@ def make_reminder_call(all_classes):
         first_msg = (
             "Hi Beth! It's Lucy. Just a quick reminder — you've got "
             "a couple of classes coming up: {}. "
-            "Which one are you thinking of going to? "
-            "And would you like me to call you again closer to class time?"
+            "Which one are you thinking of going to?"
         ).format(times)
         voicemail_msg = (
             "Hi Beth, it's your assistant Lucy. "
