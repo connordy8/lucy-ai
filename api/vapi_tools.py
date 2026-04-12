@@ -105,7 +105,7 @@ def get_calendar_events(args):
         clean = _clean_summary(summary)
         entry = "- {} at {}".format(clean, time_label) if time_label \
             else "- {}".format(clean)
-        if location and "Tice Creek" not in location:
+        if location:
             entry += " ({})".format(location.split(",")[0])
         lines.append(entry)
 
