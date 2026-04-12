@@ -67,9 +67,16 @@ def get_calendar_service():
 
 
 def get_upcoming_events(service, calendar_id):
+    """Get all events starting in the next 90 minutes.
+
+    We look further ahead than the trigger window (40-50 min) so we
+    can batch overlapping/close classes into a single reminder call.
+    E.g., Zumba at 10:00 and Functional Strength at 10:30 — Beth gets
+    one call 45 min before Zumba mentioning both, so she can choose.
+    """
     now = datetime.now(timezone.utc)
     window_start = now + timedelta(minutes=REMINDER_WINDOW_MIN)
-    window_end = now + timedelta(minutes=REMINDER_WINDOW_MAX)
+    window_end = now + timedelta(minutes=90)
 
     resp = service.events().list(
         calendarId=calendar_id,
@@ -255,11 +262,12 @@ def _wait_and_check(call_id, timeout=300):
     return False
 
 
-def _build_class_reminder_prompt(class_name, class_time):
+def _build_class_reminder_prompt(classes):
     """Build a proper system prompt for class reminder calls.
 
-    Loads the full system_prompt.txt template so Lucy has her full
-    personality, then adds class-specific context.
+    Args:
+        classes: list of dicts with 'name' and 'time' keys.
+                 Can be a single class or multiple overlapping classes.
     """
     from pathlib import Path
     from zoneinfo import ZoneInfo
@@ -272,27 +280,47 @@ def _build_class_reminder_prompt(class_name, class_time):
         "%A, %B %-d, %Y at %-I:%M %p PT")
 
     prompt = template.replace("{current_time}", current_time)
-    prompt = prompt.replace("{calendar_context}",
-                            "Beth has {} at {} today.".format(class_name, class_time))
+
+    if len(classes) == 1:
+        cal_ctx = "Beth has {} at {} today.".format(
+            classes[0]["name"], classes[0]["time"])
+        class_list = "{} at {}".format(classes[0]["name"], classes[0]["time"])
+        choice_instruction = (
+            "1. Keep it brief — remind her what class is coming up and when.\n"
+            "2. If she acknowledges, say goodbye and end the call.\n"
+        )
+    else:
+        items = ["{} at {}".format(c["name"], c["time"]) for c in classes]
+        cal_ctx = "Beth has these classes today: " + ", ".join(items)
+        class_list = " and ".join(items)
+        choice_instruction = (
+            "1. Tell Beth she has multiple classes coming up: {}.\n"
+            "2. Let her know she can choose which one to go to.\n"
+            "3. If she picks one or acknowledges, say goodbye and end the call.\n"
+        ).format(", ".join(items))
+
+    prompt = prompt.replace("{calendar_context}", cal_ctx)
     prompt = prompt.replace("{memory_context}", "(class reminder call)")
 
-    # Add explicit class-reminder instructions so Lucy stays on topic
     prompt += (
         "\n\n## THIS CALL — CLASS REMINDER\n"
-        "You are calling to remind Beth about {} at {}.\n"
-        "1. Keep it brief — remind her what class is coming up and when.\n"
-        "2. If she acknowledges, say goodbye and end the call.\n"
-        "3. Do NOT ask about bedtime, CPAP, or sleeping. "
+        "You are calling to remind Beth about {}.\n"
+        "{}"
+        "Do NOT ask about bedtime, CPAP, or sleeping. "
         "This is a daytime class reminder.\n"
-        "4. Do NOT try to extend the conversation. Just deliver the "
+        "Do NOT try to extend the conversation. Just deliver the "
         "reminder warmly and wrap up.\n"
-    ).format(class_name, class_time)
+    ).format(class_list, choice_instruction)
 
     return prompt
 
 
-def make_reminder_call(event_info):
+def make_reminder_call(all_classes):
     """Use Lucy via Vapi to call Beth with a class reminder.
+
+    Args:
+        all_classes: list of dicts with 'name', 'time', 'start_dt' keys.
+                     Can be one class or multiple overlapping classes.
 
     Tries home phone then cell phone, repeating twice:
     home -> cell -> home -> cell, stopping as soon as Beth answers.
@@ -303,31 +331,41 @@ def make_reminder_call(event_info):
         log.error("BETH_PHONE_NUMBER and BETH_CELL_NUMBER env vars required")
         return False
 
-    name = event_info["name"]
-    time_str = event_info["time"]
-
-    # Calculate minutes until class
+    # Calculate minutes until first class
     now = datetime.now(timezone.utc)
-    start_dt = event_info.get("start_dt")
-    if start_dt:
-        mins = int((start_dt - now).total_seconds() / 60)
+    first = all_classes[0]
+    if first.get("start_dt"):
+        mins = int((first["start_dt"] - now).total_seconds() / 60)
     else:
         mins = 45
 
-    # Update Lucy's first message and voicemail message
-    first_msg = (
-        "Hi Beth! It's Lucy. Just a quick reminder — you've got "
-        "{} coming up at {}. You'll want to start getting ready soon!"
-    ).format(name, time_str)
-
-    voicemail_msg = (
-        "Hi Beth, it's your assistant Lucy. "
-        "This is a reminder that you have {} in {} minutes. "
-        "Have a good day!"
-    ).format(name, mins)
+    if len(all_classes) == 1:
+        first_msg = (
+            "Hi Beth! It's Lucy. Just a quick reminder — you've got "
+            "{} coming up at {}. You'll want to start getting ready soon!"
+        ).format(first["name"], first["time"])
+        voicemail_msg = (
+            "Hi Beth, it's your assistant Lucy. "
+            "This is a reminder that you have {} in {} minutes. "
+            "Have a good day!"
+        ).format(first["name"], mins)
+    else:
+        names = " and ".join(c["name"] for c in all_classes)
+        times = ", ".join("{} at {}".format(c["name"], c["time"])
+                          for c in all_classes)
+        first_msg = (
+            "Hi Beth! It's Lucy. Just a quick reminder — you've got "
+            "a couple of classes coming up: {}. "
+            "You'll want to start getting ready soon!"
+        ).format(times)
+        voicemail_msg = (
+            "Hi Beth, it's your assistant Lucy. "
+            "This is a reminder that you have {} coming up. "
+            "Have a good day!"
+        ).format(names)
 
     # Build per-call overrides so we never mutate the shared assistant
-    prompt = _build_class_reminder_prompt(name, time_str)
+    prompt = _build_class_reminder_prompt(all_classes)
 
     overrides = {
         "model": {
@@ -390,13 +428,15 @@ def run():
 
     service = get_calendar_service()
 
-    log.info("Checking for fitness classes starting in {}-{} minutes...".format(
-        REMINDER_WINDOW_MIN, REMINDER_WINDOW_MAX))
+    log.info("Checking for fitness classes starting in {}-90 minutes...".format(
+        REMINDER_WINDOW_MIN))
 
     events = get_upcoming_events(service, calendar_id)
     log.info("Found {} events in the reminder window".format(len(events)))
 
-    calls_made = 0
+    # Collect all eligible classes into one batch
+    eligible = []
+    eligible_events = []
     for event in events:
         summary = event.get("summary", "")
         log.info("Checking: {}".format(summary))
@@ -405,15 +445,26 @@ def run():
             continue
 
         info = extract_class_info(event)
-        log.info("  Calling about: {} at {}".format(
-            info["name"], info["time"]))
+        log.info("  Eligible: {} at {}".format(info["name"], info["time"]))
+        eligible.append(info)
+        eligible_events.append(event)
 
-        success = make_reminder_call(info)
-        if success:
+    if not eligible:
+        log.info("No classes to remind about")
+        return
+
+    log.info("Calling about {} class(es): {}".format(
+        len(eligible),
+        ", ".join("{} at {}".format(c["name"], c["time"]) for c in eligible)))
+
+    # Make ONE call mentioning all classes
+    success = make_reminder_call(eligible)
+    if success:
+        for event in eligible_events:
             mark_as_reminded(service, calendar_id, event.get("id", ""))
-            calls_made += 1
 
-    log.info("Done — {} reminder call(s) placed".format(calls_made))
+    log.info("Done — {} class(es) reminded".format(
+        len(eligible) if success else 0))
 
 
 if __name__ == "__main__":
