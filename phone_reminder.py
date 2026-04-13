@@ -67,6 +67,18 @@ def get_calendar_service():
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
+def _query_events(service, calendar_id, time_min, time_max, max_results=10):
+    """Low-level calendar query helper."""
+    return service.events().list(
+        calendarId=calendar_id,
+        timeMin=time_min.isoformat(),
+        timeMax=time_max.isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+        maxResults=max_results,
+    ).execute().get("items", [])
+
+
 def get_upcoming_events(service, calendar_id):
     """Get events that need reminders: normal window + follow-ups.
 
@@ -84,30 +96,15 @@ def get_upcoming_events(service, calendar_id):
     window_start = now + timedelta(minutes=REMINDER_WINDOW_MIN)
     window_end = now + timedelta(minutes=90)
 
-    resp = service.events().list(
-        calendarId=calendar_id,
-        timeMin=window_start.isoformat(),
-        timeMax=window_end.isoformat(),
-        singleEvents=True,
-        orderBy="startTime",
-        maxResults=10,
-    ).execute()
-
-    events = resp.get("items", [])
+    events = _query_events(service, calendar_id, window_start, window_end)
     seen_ids = {e.get("id") for e in events}
 
     # --- Query 2: Follow-up reminders due now (all events today) ---
     today_start = now_pt.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = now_pt.replace(hour=23, minute=59, second=59, microsecond=0)
 
-    all_today = service.events().list(
-        calendarId=calendar_id,
-        timeMin=today_start.isoformat(),
-        timeMax=today_end.isoformat(),
-        singleEvents=True,
-        orderBy="startTime",
-        maxResults=30,
-    ).execute().get("items", [])
+    all_today = _query_events(
+        service, calendar_id, today_start, today_end, max_results=30)
 
     for ev in all_today:
         if ev.get("id") in seen_ids:
@@ -383,20 +380,21 @@ def _build_class_reminder_prompt(classes):
     else:
         details = [_class_detail(c) for c in classes]
         cal_ctx = "Beth has these classes today: " + ", ".join(details)
-        class_list = " and ".join(details)
+        class_list = ", ".join(details[:-1]) + " and " + details[-1]
         conversation_flow = (
-            "STEP 1: Tell Beth she has multiple classes coming up: {}. "
-            "Ask which one she's thinking of going to.\n"
-            "STEP 2: Wait for her response. Then ask: "
-            "\"Would you like me to call you again closer to class time "
-            "as a reminder to get ready?\"\n"
-            "STEP 3: If she says yes, ask WHEN she'd like the call "
-            "(e.g., \"How about 15 minutes before?\"). "
-            "If no, wrap up warmly.\n"
-            "STEP 4: Once she gives a time, use the "
-            "scheduleFollowUpReminder tool, confirm it's set, "
-            "and say goodbye.\n"
-        ).format(", ".join(details))
+            "STEP 1: Tell Beth she has {} classes coming up: {}. "
+            "Ask which ones she's planning to go to.\n"
+            "STEP 2: Wait for her response. For EACH class she wants "
+            "to attend, ask (one at a time): \"Would you like me to "
+            "call you again before [class name] as a reminder to get "
+            "ready?\"\n"
+            "STEP 3: If she says yes for a class, ask WHEN she'd like "
+            "the call (e.g., \"How about 15 minutes before?\"). Use "
+            "the scheduleFollowUpReminder tool for that class.\n"
+            "STEP 4: Repeat steps 2-3 for each class she mentioned. "
+            "Once done with all classes, wrap up warmly and say "
+            "goodbye.\n"
+        ).format(len(classes), ", ".join(details))
 
     prompt = prompt.replace("{calendar_context}", cal_ctx)
     prompt = prompt.replace("{memory_context}", "(class reminder call)")
@@ -458,8 +456,8 @@ def make_reminder_call(all_classes):
                           for c in all_classes)
         first_msg = (
             "Hi Beth! It's Lucy. Just a quick reminder — you've got "
-            "a couple of classes coming up: {}. "
-            "Which one are you thinking of going to?"
+            "a few classes coming up today: {}. "
+            "Which ones are you planning to go to?"
         ).format(times)
         voicemail_msg = (
             "Hi Beth, it's your assistant Lucy. "
@@ -617,6 +615,48 @@ def mark_as_reminded(service, calendar_id, event_id):
         log.warning("  Failed to mark event: {}".format(e))
 
 
+def _chain_nearby_classes(service, calendar_id, eligible, eligible_events,
+                          seen_ids, gap_minutes=90):
+    """Chain forward: find more classes within gap_minutes of the latest.
+
+    If Beth has Mat Yoga at 12:30 and UJAM at 1:30 (60 min gap), we
+    bundle them into one call instead of calling twice. Keeps chaining
+    transitively — A→B→C all get bundled if each pair is ≤ gap_minutes.
+    """
+    while True:
+        # Find the latest start time among eligible events
+        latest_dt = None
+        for info in eligible:
+            if info.get("start_dt") and (
+                    latest_dt is None or info["start_dt"] > latest_dt):
+                latest_dt = info["start_dt"]
+        if not latest_dt:
+            break
+
+        # Look for events starting between latest and latest + gap
+        chain_end = latest_dt + timedelta(minutes=gap_minutes)
+        more = _query_events(service, calendar_id, latest_dt, chain_end)
+
+        new_found = False
+        for event in more:
+            eid = event.get("id", "")
+            if eid in seen_ids:
+                continue
+            if not should_call(event):
+                seen_ids.add(eid)
+                continue
+            info = extract_class_info(event)
+            log.info("  Chaining nearby class: {} at {}".format(
+                info["name"], info["time"]))
+            eligible.append(info)
+            eligible_events.append(event)
+            seen_ids.add(eid)
+            new_found = True
+
+        if not new_found:
+            break
+
+
 def run():
     calendar_id = os.environ.get("GOOGLE_CALENDAR_ID")
     if not calendar_id:
@@ -634,6 +674,7 @@ def run():
     # Collect all eligible classes into one batch
     eligible = []
     eligible_events = []
+    seen_ids = {e.get("id") for e in events}
     for event in events:
         summary = event.get("summary", "")
         log.info("Checking: {}".format(summary))
@@ -646,9 +687,23 @@ def run():
         eligible.append(info)
         eligible_events.append(event)
 
+    # Chain forward — bundle classes within 90 min of each other
+    # into one call so Beth doesn't get multiple calls in a row
+    if eligible:
+        _chain_nearby_classes(
+            service, calendar_id, eligible, eligible_events, seen_ids)
+
     if not eligible:
         log.info("No classes to remind about")
         return
+
+    # Sort by start time so the call mentions them in order
+    paired = sorted(
+        zip(eligible, eligible_events),
+        key=lambda p: p[0].get("start_dt") or datetime.max.replace(
+            tzinfo=timezone.utc))
+    eligible = [p[0] for p in paired]
+    eligible_events = [p[1] for p in paired]
 
     log.info("Calling about {} class(es): {}".format(
         len(eligible),
