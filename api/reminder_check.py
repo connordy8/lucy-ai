@@ -141,6 +141,14 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(b"Unauthorized")
             return
 
+        # Kill switch — disable class reminders entirely
+        if os.environ.get("DISABLE_CLASS_REMINDERS", "").strip().lower() in (
+                "1", "true", "yes"):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Class reminders are disabled")
+            return
+
         # Check calendar
         try:
             has_class, detail = _has_upcoming_class()
