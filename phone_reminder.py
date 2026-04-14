@@ -711,12 +711,14 @@ def run():
 
     # Make ONE call mentioning all classes
     success = make_reminder_call(eligible)
-    if success:
-        for event in eligible_events:
-            mark_as_reminded(service, calendar_id, event.get("id", ""))
 
-    log.info("Done — {} class(es) reminded".format(
-        len(eligible) if success else 0))
+    # ALWAYS mark as reminded — even if Beth didn't answer.
+    # Otherwise the cron retriggers every 5 min, flooding her phone.
+    for event in eligible_events:
+        mark_as_reminded(service, calendar_id, event.get("id", ""))
+
+    log.info("Done — {} (answered: {})".format(
+        ", ".join(c["name"] for c in eligible), success))
 
 
 if __name__ == "__main__":
