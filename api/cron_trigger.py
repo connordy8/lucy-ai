@@ -18,6 +18,14 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(msg.encode())
             return
 
+        # Kill switch — disable all Lucy calls
+        if os.environ.get("DISABLE_ALL_CALLS", "").strip().lower() in (
+                "1", "true", "yes"):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"All calls are disabled")
+            return
+
         gh_token = os.environ.get("GITHUB_TOKEN", "").strip()
         if not gh_token:
             self.send_response(500)
